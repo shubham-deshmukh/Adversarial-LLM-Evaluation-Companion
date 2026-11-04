@@ -125,3 +125,4 @@ class TypingWorker(QThread):
             logger.exception("Error occurred in TypingWorker keystroke loop")
             self.status_update.emit(f"Typing Error: {exc}")
             self.typing_finished.emit(False, self.mode)
+

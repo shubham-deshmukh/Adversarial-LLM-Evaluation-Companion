@@ -68,3 +68,4 @@ class GlobalHotkeyListener:
     def is_running(self) -> bool:
         """Returns True if the hook is active."""
         return self._is_running and self._listener is not None and self._listener.is_alive()
+

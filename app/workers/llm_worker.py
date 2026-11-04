@@ -112,3 +112,4 @@ class LLMWorker(QThread):
         except Exception as exc:  # pylint: disable=broad-except
             logger.exception("Unexpected error occurred during LLMWorker run")
             self.error_occurred.emit(f"Unexpected Error: {exc}")
+

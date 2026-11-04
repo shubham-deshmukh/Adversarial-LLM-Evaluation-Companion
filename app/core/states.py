@@ -22,3 +22,4 @@ class AppState(str, Enum):
     EMERGENCY_STOP_TRIGGERED = "Emergency Stop triggered — Typing cancelled"
     TYPING_ABORTED = "Typing aborted by user"
     ERROR = "Error"
+
