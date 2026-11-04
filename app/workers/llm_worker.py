@@ -59,14 +59,28 @@ class LLMWorker(QThread):
     def run(self) -> None:
         """Executes the Chat Completion call in a background thread."""
         api_key = CONFIG.OPENAI_API_KEY.strip()
-        if not api_key or api_key == "your_openai_api_key_here":
+        base_url = CONFIG.OPENAI_BASE_URL
+
+        # If base_url is set (local model runner), allow custom keys or fallback placeholder
+        if not api_key:
+            if base_url:
+                api_key = "local"
+            else:
+                self.error_occurred.emit(
+                    "OpenAI API Key is missing. Please set OPENAI_API_KEY in your .env file."
+                )
+                return
+        elif api_key == "your_openai_api_key_here" and not base_url:
             self.error_occurred.emit(
                 "OpenAI API Key is missing. Please set OPENAI_API_KEY in your .env file."
             )
             return
 
         try:
-            client = OpenAI(api_key=api_key)
+            client_kwargs = {"api_key": api_key}
+            if base_url:
+                client_kwargs["base_url"] = base_url
+            client = OpenAI(**client_kwargs)
 
             if self.mode == "problem":
                 messages = [

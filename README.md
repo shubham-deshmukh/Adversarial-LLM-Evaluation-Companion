@@ -110,13 +110,25 @@ pip install -r requirements.txt
 ```
 
 ### 4. Configure Environment Variables
-Copy `.env.example` to `.env` and insert your OpenAI API key:
+Copy `.env.example` to `.env` and set your configuration:
 ```powershell
 copy .env.example .env
 ```
 
-Edit `.env`:
+**For Local Model Runner (e.g. LM Studio, Ollama, vLLM, local server):**
 ```ini
+OPENAI_BASE_URL=http://127.0.0.1:8317/v1
+OPENAI_API_KEY=123456
+MODEL_NAME=gemini-3.8-flash-high
+FOCUS_DELAY_SECONDS=2
+MIN_TYPE_DELAY=0.003
+MAX_TYPE_DELAY=0.010
+EMERGENCY_STOP_KEY=<esc>
+```
+
+**For Official OpenAI Cloud:**
+```ini
+# Leave OPENAI_BASE_URL commented or empty
 OPENAI_API_KEY=sk-proj-your-actual-api-key-here
 MODEL_NAME=gpt-4o
 FOCUS_DELAY_SECONDS=2

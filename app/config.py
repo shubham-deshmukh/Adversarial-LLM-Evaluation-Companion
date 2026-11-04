@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 from dotenv import load_dotenv
 from pynput.keyboard import Key
 
@@ -26,6 +27,7 @@ class AppConfig:
 
     # API Configuration
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
+    OPENAI_BASE_URL: Optional[str] = os.getenv("OPENAI_BASE_URL", "").strip() or None
     MODEL_NAME: str = os.getenv("MODEL_NAME", "gpt-4o")
 
     # Keystroke Engine Timings
