@@ -2,3 +2,4 @@
 from app.ui.main_window import CompanionWindow
 
 __all__ = ["CompanionWindow"]
+

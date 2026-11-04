@@ -217,3 +217,4 @@ class CompanionWindow(QWidget):
             self._llm_worker.wait(1000)
 
         super().closeEvent(event)
+
