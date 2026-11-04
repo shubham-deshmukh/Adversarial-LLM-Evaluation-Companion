@@ -1,6 +1,7 @@
 """
 Main Floating Companion Window (Always-on-Top).
 Provides a Human-in-the-Loop (HITL) interface for evaluating adversarial LLM edge cases.
+Wires all state machine transitions, worker threads, and emergency stops.
 """
 
 from __future__ import annotations
@@ -11,7 +12,6 @@ from typing import Optional
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QCloseEvent
 from PyQt6.QtWidgets import (
-    QApplication,
     QHBoxLayout,
     QLabel,
     QPlainTextEdit,
@@ -24,6 +24,8 @@ from app.config import CONFIG
 from app.core.states import AppState
 from app.listeners.hotkey_listener import GlobalHotkeyListener
 from app.ui.styles import DARK_THEME_QSS
+from app.workers.llm_worker import LLMWorker
+from app.workers.typing_worker import TypingWorker
 
 logger = logging.getLogger(__name__)
 
@@ -36,16 +38,17 @@ class CompanionWindow(QWidget):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
 
-        # Thread synchronization primitives
+        # Thread synchronization primitives & state
         self.abort_event = threading.Event()
         self.active_problem_text = ""
         self.active_solution_text = ""
+        self.current_state = AppState.IDLE_READY
 
-        # Workers references
-        self._llm_worker = None
-        self._typing_worker = None
+        # Active Worker references
+        self._llm_worker: Optional[LLMWorker] = None
+        self._typing_worker: Optional[TypingWorker] = None
 
-        # Configure window flags: Always on top, normal dialog style
+        # Configure window flags: Always on top, normal utility window
         self.setWindowFlags(
             Qt.WindowType.WindowStaysOnTopHint
             | Qt.WindowType.WindowCloseButtonHint
@@ -58,8 +61,9 @@ class CompanionWindow(QWidget):
         # Apply dark modern stylesheet
         self.setStyleSheet(DARK_THEME_QSS)
 
-        # Initialize UI widgets
+        # Initialize UI widgets & wire event signals
         self._init_ui()
+        self._wire_signals()
 
         # Initialize and start global background OS keyboard listener
         self.hotkey_listener = GlobalHotkeyListener(
@@ -112,7 +116,9 @@ class CompanionWindow(QWidget):
         self.btn_gen_problem.setObjectName("btn_gen_problem")
         phase1_layout.addWidget(self.btn_gen_problem)
 
-        self.btn_type_problem = QPushButton(f"2. Type Problem ({CONFIG.FOCUS_DELAY_SECONDS}s Focus Delay)", self)
+        self.btn_type_problem = QPushButton(
+            f"2. Type Problem ({CONFIG.FOCUS_DELAY_SECONDS}s Focus Delay)", self
+        )
         self.btn_type_problem.setObjectName("btn_type_problem")
         self.btn_type_problem.setEnabled(False)
         phase1_layout.addWidget(self.btn_type_problem)
@@ -148,7 +154,9 @@ class CompanionWindow(QWidget):
         phase3_label.setProperty("class", "section-header")
         main_layout.addWidget(phase3_label)
 
-        self.btn_type_solution = QPushButton(f"4. Type Solution ({CONFIG.FOCUS_DELAY_SECONDS}s Focus Delay)", self)
+        self.btn_type_solution = QPushButton(
+            f"4. Type Solution ({CONFIG.FOCUS_DELAY_SECONDS}s Focus Delay)", self
+        )
         self.btn_type_solution.setObjectName("btn_type_solution")
         self.btn_type_solution.setEnabled(False)
         main_layout.addWidget(self.btn_type_solution)
@@ -156,15 +164,29 @@ class CompanionWindow(QWidget):
         # -------------------------------------------------------------
         # Emergency Stop Control (High Priority)
         # -------------------------------------------------------------
-        self.btn_emergency_stop = QPushButton(f"STOP TYPING ({CONFIG.EMERGENCY_STOP_KEY_NAME.upper()})", self)
+        self.btn_emergency_stop = QPushButton(
+            f"STOP TYPING ({CONFIG.EMERGENCY_STOP_KEY_NAME.upper()})", self
+        )
         self.btn_emergency_stop.setObjectName("btn_emergency_stop")
         self.btn_emergency_stop.setCursor(Qt.CursorShape.PointingHandCursor)
         main_layout.addWidget(self.btn_emergency_stop)
 
+    def _wire_signals(self) -> None:
+        """Connects UI button events to state machine handlers."""
+        self.btn_gen_problem.clicked.connect(self._on_gen_problem_clicked)
+        self.btn_type_problem.clicked.connect(self._on_type_problem_clicked)
+        self.btn_model_defeated.clicked.connect(self._on_model_defeated_clicked)
+        self.btn_model_succeeded.clicked.connect(self._on_model_succeeded_clicked)
+        self.btn_type_solution.clicked.connect(self._on_type_solution_clicked)
+        self.btn_emergency_stop.clicked.connect(self._on_emergency_stop_clicked)
+
+    # -----------------------------------------------------------------
+    # State Banner & UI Helpers
+    # -----------------------------------------------------------------
     def set_status(self, text: str, highlight_mode: Optional[str] = None) -> None:
         """
         Updates the prominent top status banner with dynamic color themes.
-        highlight_mode: 'active' (green), 'warning' (yellow/orange), 'error' (red), or None (blue default).
+        highlight_mode: 'active' (green), 'warning' (yellow/orange), 'error' (red), or None.
         """
         self.status_banner.setText(text)
 
@@ -177,7 +199,12 @@ class CompanionWindow(QWidget):
             self.status_banner.setStyleSheet(
                 f"{base_style} background-color: #451a03; color: #fbbf24; border: 1px solid #f59e0b;"
             )
-        elif highlight_mode == "error" or "Emergency" in text or "aborted" in text.lower() or "Error" in text:
+        elif (
+            highlight_mode == "error"
+            or "Emergency" in text
+            or "aborted" in text.lower()
+            or "error" in text.lower()
+        ):
             self.status_banner.setStyleSheet(
                 f"{base_style} background-color: #450a0a; color: #f87171; border: 1px solid #ef4444;"
             )
@@ -190,16 +217,209 @@ class CompanionWindow(QWidget):
                 f"{base_style} background-color: #1e2025; color: #38bdf8; border: 1px solid #334155;"
             )
 
+    # -----------------------------------------------------------------
+    # Phase 1: Problem Generation & Typing Handlers
+    # -----------------------------------------------------------------
+    def _on_gen_problem_clicked(self) -> None:
+        """Initiates problem generation via LLMWorker."""
+        self.set_status(AppState.GENERATING_PROBLEM.value)
+
+        # Disable action buttons while generation is active
+        self.btn_gen_problem.setEnabled(False)
+        self.btn_type_problem.setEnabled(False)
+        self.btn_model_defeated.setEnabled(False)
+        self.btn_model_succeeded.setEnabled(False)
+        self.btn_type_solution.setEnabled(False)
+
+        self._llm_worker = LLMWorker(mode="problem", parent=self)
+        self._llm_worker.result_ready.connect(self._on_llm_result_ready)
+        self._llm_worker.error_occurred.connect(self._on_llm_error_occurred)
+        self._llm_worker.start()
+
+    def _on_type_problem_clicked(self) -> None:
+        """Reads preview box text and starts TypingWorker for the problem."""
+        problem_text = self.preview_box.toPlainText().strip()
+        if not problem_text:
+            self.set_status("Preview text is empty. Generate or enter text first.", highlight_mode="warning")
+            return
+
+        # Store latest edited text as active problem context
+        self.active_problem_text = problem_text
+
+        # Disable controls during typing
+        self.btn_gen_problem.setEnabled(False)
+        self.btn_type_problem.setEnabled(False)
+        self.btn_model_defeated.setEnabled(False)
+        self.btn_model_succeeded.setEnabled(False)
+        self.btn_type_solution.setEnabled(False)
+
+        self._start_typing_worker(text=problem_text, mode="problem")
+
+    # -----------------------------------------------------------------
+    # Phase 2: Human Evaluation Gate Handlers
+    # -----------------------------------------------------------------
+    def _on_model_defeated_clicked(self) -> None:
+        """Operator verified model failed: generates verified ground-truth solution."""
+        self.set_status(AppState.GENERATING_SOLUTION.value)
+
+        # Context is either active problem text or current preview text
+        context = self.active_problem_text or self.preview_box.toPlainText().strip()
+        if not context:
+            self.set_status("Problem context missing. Cannot generate solution.", highlight_mode="error")
+            return
+
+        self.btn_gen_problem.setEnabled(False)
+        self.btn_type_problem.setEnabled(False)
+        self.btn_model_defeated.setEnabled(False)
+        self.btn_model_succeeded.setEnabled(False)
+        self.btn_type_solution.setEnabled(False)
+
+        self._llm_worker = LLMWorker(mode="solution", problem_context=context, parent=self)
+        self._llm_worker.result_ready.connect(self._on_llm_result_ready)
+        self._llm_worker.error_occurred.connect(self._on_llm_error_occurred)
+        self._llm_worker.start()
+
+    def _on_model_succeeded_clicked(self) -> None:
+        """Operator verified model succeeded: resets workflow to clean state."""
+        self.active_problem_text = ""
+        self.active_solution_text = ""
+        self.preview_box.clear()
+        self.set_status(AppState.IDLE_READY.value)
+
+        # Reset button states
+        self.btn_gen_problem.setEnabled(True)
+        self.btn_type_problem.setEnabled(False)
+        self.btn_model_defeated.setEnabled(False)
+        self.btn_model_succeeded.setEnabled(False)
+        self.btn_type_solution.setEnabled(False)
+
+    # -----------------------------------------------------------------
+    # Phase 3: Solution Typing Handlers
+    # -----------------------------------------------------------------
+    def _on_type_solution_clicked(self) -> None:
+        """Reads preview box text and starts TypingWorker for the solution."""
+        solution_text = self.preview_box.toPlainText().strip()
+        if not solution_text:
+            self.set_status("Solution preview text is empty.", highlight_mode="warning")
+            return
+
+        self.active_solution_text = solution_text
+
+        self.btn_gen_problem.setEnabled(False)
+        self.btn_type_problem.setEnabled(False)
+        self.btn_model_defeated.setEnabled(False)
+        self.btn_model_succeeded.setEnabled(False)
+        self.btn_type_solution.setEnabled(False)
+
+        self._start_typing_worker(text=solution_text, mode="solution")
+
+    # -----------------------------------------------------------------
+    # LLM Callback Handlers
+    # -----------------------------------------------------------------
+    def _on_llm_result_ready(self, mode: str, generated_text: str) -> None:
+        """Populates preview box and transitions states upon LLM completion."""
+        self.preview_box.setPlainText(generated_text)
+
+        if mode == "problem":
+            self.active_problem_text = generated_text
+            self.set_status(AppState.PROBLEM_READY.value)
+            self.btn_gen_problem.setEnabled(True)
+            self.btn_type_problem.setEnabled(True)
+        elif mode == "solution":
+            self.active_solution_text = generated_text
+            self.set_status(AppState.SOLUTION_READY.value)
+            self.btn_type_solution.setEnabled(True)
+            self.btn_model_defeated.setEnabled(True)  # Allow re-gen if needed
+            self.btn_model_succeeded.setEnabled(True)
+
+    def _on_llm_error_occurred(self, error_message: str) -> None:
+        """Displays error message and re-enables problem generation."""
+        logger.error("LLMWorker error: %s", error_message)
+        self.set_status(f"Error: {error_message}", highlight_mode="error")
+        self.btn_gen_problem.setEnabled(True)
+        if self.active_problem_text:
+            self.btn_type_problem.setEnabled(True)
+            self.btn_model_defeated.setEnabled(True)
+            self.btn_model_succeeded.setEnabled(True)
+
+    # -----------------------------------------------------------------
+    # Typing Worker Execution & Callbacks
+    # -----------------------------------------------------------------
+    def _start_typing_worker(self, text: str, mode: str) -> None:
+        """Instantiates and launches TypingWorker thread."""
+        self.abort_event.clear()
+        self._typing_worker = TypingWorker(
+            text_to_type=text,
+            mode=mode,
+            abort_event=self.abort_event,
+            parent=self,
+        )
+        self._typing_worker.status_update.connect(self._on_typing_status_update)
+        self._typing_worker.typing_finished.connect(self._on_typing_finished)
+        self._typing_worker.start()
+
+    def _on_typing_status_update(self, status: str) -> None:
+        """Updates the status banner as countdown and typing progress."""
+        self.set_status(status)
+
+    def _on_typing_finished(self, completed_normally: bool, mode: str) -> None:
+        """Handles completion or cancellation of TypingWorker."""
+        if completed_normally:
+            self.set_status(AppState.TYPING_COMPLETED.value)
+
+            if mode == "problem":
+                # 1-second pause on "Typing completed" before transitioning to human eval
+                QTimer.singleShot(1000, self._transition_to_human_eval)
+            elif mode == "solution":
+                # 1-second pause after solution typing completes, then return to ready
+                QTimer.singleShot(1000, self._on_cycle_completed)
+        else:
+            # Typing was aborted or interrupted
+            logger.info("Typing finished abnormally (Aborted / Stopped) for mode '%s'", mode)
+            # Re-enable the corresponding type button so operator can refocus and retry without regenerating
+            if mode == "problem":
+                self.btn_gen_problem.setEnabled(True)
+                self.btn_type_problem.setEnabled(True)
+            elif mode == "solution":
+                self.btn_type_solution.setEnabled(True)
+                self.btn_model_defeated.setEnabled(True)
+                self.btn_model_succeeded.setEnabled(True)
+
+    def _transition_to_human_eval(self) -> None:
+        """Transitions state to waiting for human evaluation gate."""
+        self.set_status(AppState.WAITING_HUMAN_EVAL.value)
+        self.btn_model_defeated.setEnabled(True)
+        self.btn_model_succeeded.setEnabled(True)
+        self.btn_gen_problem.setEnabled(True)
+        self.btn_type_problem.setEnabled(True)
+
+    def _on_cycle_completed(self) -> None:
+        """Resets status after solution has been successfully delivered."""
+        self.set_status("Evaluation Cycle Completed — Ready for next problem")
+        self.btn_gen_problem.setEnabled(True)
+        self.btn_model_succeeded.setEnabled(True)
+
+    # -----------------------------------------------------------------
+    # Emergency Stop Handlers
+    # -----------------------------------------------------------------
+    def _on_emergency_stop_clicked(self) -> None:
+        """Triggered via GUI Emergency Stop button click."""
+        logger.info("Emergency Stop button clicked.")
+        self.abort_event.set()
+        self._handle_emergency_stop_triggered()
+
     def _on_emergency_hotkey_pressed(self) -> None:
         """Thread-safe notification invoked when global Esc is pressed."""
         logger.info("Emergency Stop key detected by global listener.")
-        # Trigger UI update safely on Qt main thread via QTimer
         QTimer.singleShot(0, self._handle_emergency_stop_triggered)
 
     def _handle_emergency_stop_triggered(self) -> None:
         """Called on main UI thread when emergency stop is triggered."""
         self.set_status(AppState.EMERGENCY_STOP_TRIGGERED.value, highlight_mode="error")
 
+    # -----------------------------------------------------------------
+    # Lifecycle Cleanup
+    # -----------------------------------------------------------------
     def closeEvent(self, event: QCloseEvent) -> None:
         """Gracefully terminates background threads when window is closed."""
         logger.info("Shutting down application window and background listeners...")
@@ -217,4 +437,3 @@ class CompanionWindow(QWidget):
             self._llm_worker.wait(1000)
 
         super().closeEvent(event)
-
