@@ -146,11 +146,10 @@ EMERGENCY_STOP_KEY=<esc>
 
 ## Operational Walkthrough (HITL State Machine)
 
-1. **Step 1: Generate Adversarial Problem**
-   - Click **`1. Generate Problem`**.
-   - The status updates to `Generating problem...` while `LLMWorker` calls OpenAI with custom red-teaming system prompts (deceptive logic puzzle, reasoning trap, or counter-intuitive edge case).
+1. **Step 1: Generate or Paste Adversarial Problem**
+   - **Option A (AI Generation):** Click **`1. Generate Problem`**. The status updates to `Generating problem...` while `LLMWorker` calls your configured model.
+   - **Option B (Direct Paste / Skip Generation):** Paste (`Ctrl+V`) your custom problem directly into the **Preview & Edit Area**. The companion immediately transitions to `"Problem ready (Manual input)"` and enables **`2. Type Problem`** without needing an API generation call.
 2. **Step 2: Inspect & Edit Preview**
-   - The generated prompt populates the **Preview & Edit Area**.
    - Review or manually adjust the puzzle directly in the text box.
 3. **Step 3: Type Problem into Browser**
    - Click **`2. Type Problem (2s Focus Delay)`**.
