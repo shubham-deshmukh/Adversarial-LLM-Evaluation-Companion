@@ -12,6 +12,7 @@ class AppState(str, Enum):
     IDLE_READY = "Idle — Ready"
     GENERATING_PROBLEM = "Generating problem..."
     PROBLEM_READY = "Problem ready (Review preview below)"
+    PROBLEM_READY_MANUAL = "Problem ready (Manual input — Review preview below)"
     WAITING_FOCUS_2S = "Waiting for focus — 2 seconds"
     WAITING_FOCUS_1S = "Waiting for focus — 1 second"
     TYPING = "Typing..."

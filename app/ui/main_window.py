@@ -179,6 +179,7 @@ class CompanionWindow(QWidget):
         self.btn_model_succeeded.clicked.connect(self._on_model_succeeded_clicked)
         self.btn_type_solution.clicked.connect(self._on_type_solution_clicked)
         self.btn_emergency_stop.clicked.connect(self._on_emergency_stop_clicked)
+        self.preview_box.textChanged.connect(self._on_preview_text_changed)
 
     # -----------------------------------------------------------------
     # State Banner & UI Helpers
@@ -220,6 +221,36 @@ class CompanionWindow(QWidget):
     # -----------------------------------------------------------------
     # Phase 1: Problem Generation & Typing Handlers
     # -----------------------------------------------------------------
+    def _on_preview_text_changed(self) -> None:
+        """Handles manual pasting or typing directly into the preview area."""
+        # Do not alter button states if an active background worker is running
+        if (self._typing_worker and self._typing_worker.isRunning()) or (
+            self._llm_worker and self._llm_worker.isRunning()
+        ):
+            return
+
+        text = self.preview_box.toPlainText().strip()
+        current_status = self.status_banner.text()
+
+        # If in Idle or Manual Input state:
+        if current_status in (AppState.IDLE_READY.value, AppState.PROBLEM_READY_MANUAL.value):
+            if text:
+                self.btn_type_problem.setEnabled(True)
+                if current_status == AppState.IDLE_READY.value:
+                    self.set_status(AppState.PROBLEM_READY_MANUAL.value)
+            else:
+                self.btn_type_problem.setEnabled(False)
+                if current_status == AppState.PROBLEM_READY_MANUAL.value:
+                    self.set_status(AppState.IDLE_READY.value)
+
+        # If in LLM-generated Problem Ready state:
+        elif current_status == AppState.PROBLEM_READY.value:
+            self.btn_type_problem.setEnabled(bool(text))
+
+        # If in Solution Ready state:
+        elif current_status == AppState.SOLUTION_READY.value:
+            self.btn_type_solution.setEnabled(bool(text))
+
     def _on_gen_problem_clicked(self) -> None:
         """Initiates problem generation via LLMWorker."""
         self.set_status(AppState.GENERATING_PROBLEM.value)
